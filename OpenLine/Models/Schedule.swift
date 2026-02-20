@@ -26,5 +26,4 @@ struct Schedule: Identifiable, Codable {
 enum ScheduleType: String, CaseIterable {
     case recurring = "Recurring"
     case oneTime = "One-time"
-    case commute = "Commute"
 }

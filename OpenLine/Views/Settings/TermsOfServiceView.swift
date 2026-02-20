@@ -11,11 +11,10 @@ struct TermsOfServiceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Terms of Service")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
+                    .font(TurretTheme.statusFont(size: 28, weight: .bold))
 
                 Text("Last updated: January 27, 2026")
-                    .font(.subheadline)
+                    .font(TurretTheme.captionFont(size: 13))
                     .foregroundColor(.secondary)
 
                 termsSection(
@@ -155,10 +154,10 @@ struct TermsOfServiceView: View {
     private func termsSection(title: String, content: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.headline)
+                .font(TurretTheme.statusFont(size: 16))
 
             Text(content)
-                .font(.body)
+                .font(TurretTheme.bodyFont(size: 15))
                 .foregroundColor(.secondary)
         }
     }

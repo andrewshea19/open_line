@@ -24,6 +24,17 @@ final class NotificationManager: ObservableObject {
     private init() {
         loadSavedToken()
         checkAuthorizationStatus()
+        setupForegroundObserver()
+    }
+
+    private func setupForegroundObserver() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.checkAuthorizationStatus()
+        }
     }
 
     // MARK: - Authorization

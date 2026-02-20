@@ -11,11 +11,11 @@ struct ManageFriendsView: View {
     @State private var showingAddFriend = false
     @State private var friendToRemove: Friend?
     @State private var showingRemoveConfirm = false
-    
+
     var body: some View {
         List {
             globalVisibilitySection
-            
+
             if !viewModel.friends.isEmpty {
                 individualFriendsSection
             }
@@ -25,14 +25,9 @@ struct ManageFriendsView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: { showingAddFriend = true }) {
-                    ModernIconBadge(
-                        icon: "plus",
-                        color: .blue,
-                        size: 28,
-                        useNeutralStyle: true
-                    )
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 17, weight: .medium))
                 }
-                .buttonStyle(PlainButtonStyle())
             }
         }
         .sheet(isPresented: $showingAddFriend, onDismiss: {
@@ -62,7 +57,7 @@ struct ManageFriendsView: View {
             }
         }
     }
-    
+
     private var globalVisibilitySection: some View {
         Section {
             Toggle("Share Status with All Friends", isOn: Binding(
@@ -72,12 +67,15 @@ struct ManageFriendsView: View {
                     viewModel.setAllFriendsVisibility(newValue)
                 }
             ))
+            .font(TurretTheme.statusFont(size: 15, weight: .medium))
+            .tint(TurretTheme.ledGreen)
         } footer: {
             Text("When disabled, your status will be hidden from all friends. When enabled, use individual toggles below to control visibility per friend.")
+                .font(TurretTheme.captionFont(size: 12))
                 .foregroundColor(.secondary)
         }
     }
-    
+
     private var individualFriendsSection: some View {
         Section {
             ForEach(viewModel.friends) { friend in
@@ -85,34 +83,35 @@ struct ManageFriendsView: View {
                     VStack(alignment: .leading) {
                         HStack {
                             Text(friend.name)
-                                .font(.headline)
-                            
+                                .font(TurretTheme.statusFont(size: 15, weight: .medium))
+
                             if ContactVerificationManager.shared.isPhoneNumberInContacts(friend.phoneNumber) {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
+                                    .foregroundColor(TurretTheme.ledGreen)
                                     .font(.caption)
                             }
                         }
-                        
+
                         Text(friend.phoneNumber)
-                            .font(.caption)
+                            .font(TurretTheme.captionFont(size: 12))
                             .foregroundColor(.secondary)
                     }
-                    
+
                     Spacer()
-                    
+
                     HStack(spacing: 12) {
                         Toggle("", isOn: Binding(
                             get: { friend.canSeeMyStatus },
                             set: { viewModel.updateFriendVisibility(friend: friend, canSee: $0) }
                         ))
                         .disabled(!viewModel.globalStatusVisibility)
-                        
+                        .tint(TurretTheme.ledGreen)
+
                         Button("Remove") {
                             friendToRemove = friend
                             showingRemoveConfirm = true
                         }
-                        .font(.caption)
+                        .font(TurretTheme.statusFont(size: 11, weight: .medium))
                         .foregroundColor(.red)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -132,10 +131,12 @@ struct ManageFriendsView: View {
             }
         } header: {
             Text("Individual Status Visibility")
+                .font(TurretTheme.headerFont(size: 13))
+                
         } footer: {
             Text("Toggle individual friends' ability to see your status. Use the Remove button or swipe to delete. ✓ indicates the person is in your contacts.")
+                .font(TurretTheme.captionFont(size: 12))
                 .foregroundColor(.secondary)
         }
     }
 }
-

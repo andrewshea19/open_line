@@ -9,7 +9,7 @@ import SwiftUI
 struct OnboardingView: View {
     @Binding var isPresented: Bool
     @State private var currentPage = 0
-    
+
     var body: some View {
         VStack {
             TabView(selection: $currentPage) {
@@ -17,18 +17,18 @@ struct OnboardingView: View {
                     icon: "phone.circle.fill",
                     title: "Stay Connected",
                     description: "Know when your friends and family are available for spontaneous phone calls.",
-                    iconColor: .blue
+                    iconColor: TurretTheme.ledGreen
                 )
                 .tag(0)
-                
+
                 OnboardingPageView(
                     icon: "clock.circle.fill",
                     title: "Smart Scheduling",
                     description: "Set your availability and let others know when you're free for calls.",
-                    iconColor: .green
+                    iconColor: TurretTheme.ledAmber
                 )
                 .tag(1)
-                
+
                 OnboardingPageView(
                     icon: "icloud.circle.fill",
                     title: "Stay Synchronized",
@@ -38,7 +38,7 @@ struct OnboardingView: View {
                 .tag(2)
             }
             .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
-            
+
             HStack {
                 if currentPage > 0 {
                     Button("Back") {
@@ -46,10 +46,11 @@ struct OnboardingView: View {
                             currentPage -= 1
                         }
                     }
+                    .font(TurretTheme.bodyFont(size: 17))
                 }
-                
+
                 Spacer()
-                
+
                 Button(currentPage == 2 ? "Get Started" : "Next") {
                     if currentPage == 2 {
                         isPresented = false
@@ -59,7 +60,7 @@ struct OnboardingView: View {
                         }
                     }
                 }
-                .fontWeight(.semibold)
+                .font(TurretTheme.statusFont(size: 17))
             }
             .padding()
         }
@@ -71,27 +72,34 @@ struct OnboardingPageView: View {
     let title: String
     let description: String
     let iconColor: Color
-    
+
     var body: some View {
         VStack(spacing: 30) {
             Spacer()
-            
-            Image(systemName: icon)
-                .font(.system(size: 80))
-                .foregroundColor(iconColor)
-            
+
+            // LED-style icon
+            ZStack {
+                Circle()
+                    .fill(iconColor.opacity(0.2))
+                    .frame(width: 120, height: 120)
+                    .blur(radius: 10)
+
+                Image(systemName: icon)
+                    .font(.system(size: 70))
+                    .foregroundColor(iconColor)
+            }
+
             VStack(spacing: 16) {
                 Text(title)
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                
+                    .font(TurretTheme.statusFont(size: 28, weight: .bold))
+
                 Text(description)
-                    .font(.body)
+                    .font(TurretTheme.bodyFont(size: 17))
                     .multilineTextAlignment(.center)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
             }
-            
+
             Spacer()
         }
     }

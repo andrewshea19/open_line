@@ -7,6 +7,8 @@
 import Foundation
 import SwiftUI
 import Combine
+import WidgetKit
+import UserNotifications
 
 // Centralized strings and shared values that define app semantics (no UI change)
 struct AppConstants {
@@ -67,6 +69,8 @@ final class OpenLineViewModel: ObservableObject {
     private var statusHistory: [(StatusType, Date)] = []
     private var cancellables = Set<AnyCancellable>()
     private var statusCheckTimer: Timer?
+    private var statusExpirationTimer: Timer?
+    private var scheduleActivationTimer: Timer?
     private let logger: LogSink
     
     // MARK: - Friend Categories Cache
@@ -95,6 +99,8 @@ final class OpenLineViewModel: ObservableObject {
     
     deinit {
         statusCheckTimer?.invalidate()
+        statusExpirationTimer?.invalidate()
+        scheduleActivationTimer?.invalidate()
     }
     
     private func setupBindings() {
@@ -112,6 +118,7 @@ final class OpenLineViewModel: ObservableObject {
                     self?.currentStatus = profile.currentStatus
                     self?.statusMessage = profile.statusMessage
                     self?.statusUntil = profile.statusUntil
+                    self?.scheduleStatusExpiration(until: profile.statusUntil)
                 }
             }
             .store(in: &cancellables)
@@ -131,6 +138,14 @@ final class OpenLineViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.fetchFriendRequests()
+            }
+            .store(in: &cancellables)
+
+        // Listen for app becoming active to sync widget changes
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncFromWidget()
             }
             .store(in: &cancellables)
 
@@ -186,7 +201,15 @@ final class OpenLineViewModel: ObservableObject {
             currentStatus = profile.currentStatus
             statusMessage = profile.statusMessage
             statusUntil = profile.statusUntil
+            // Schedule expiration timer for existing status
+            scheduleStatusExpiration(until: statusUntil)
         }
+
+        // Apply any active schedule immediately on startup
+        applyScheduleIfNeeded(at: Date())
+
+        // Schedule timer for next schedule activation
+        scheduleNextActivation()
     }
     
     private func saveData() {
@@ -201,7 +224,7 @@ final class OpenLineViewModel: ObservableObject {
     }
     
     // MARK: - Error Handling
-    
+
     private func handleError(_ error: AppError) {
         errorMessage = error.errorDescription
         showError = true
@@ -209,23 +232,61 @@ final class OpenLineViewModel: ObservableObject {
             logger.log("AppError: \(description)")
         }
     }
-    
+
+    // MARK: - Badge Management
+
+    func updateAppBadge() {
+        let badgeCount = pendingFriendRequests.count
+        UNUserNotificationCenter.current().setBadgeCount(badgeCount) { error in
+            if let error = error {
+                Logger.shared.error("Failed to update badge: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Friend Availability Notifications
+
+    private func checkForNewlyAvailableFriends(oldFriends: [Friend], newFriends: [Friend]) {
+        guard NotificationManager.shared.isAuthorized else { return }
+
+        for newFriend in newFriends {
+            // Find old version of this friend
+            guard let oldFriend = oldFriends.first(where: { $0.id == newFriend.id }) else { continue }
+
+            // Check if friend just became available
+            let wasAvailable = oldFriend.currentStatus == "Available" && (oldFriend.availableUntil ?? Date.distantPast) > Date()
+            let isNowAvailable = newFriend.currentStatus == "Available" && (newFriend.availableUntil ?? Date.distantPast) > Date()
+
+            if !wasAvailable && isNowAvailable {
+                // Friend just became available - send local notification
+                NotificationManager.shared.scheduleLocalNotification(
+                    title: "\(newFriend.name) is now available",
+                    body: newFriend.statusMessage ?? "Free for calls!",
+                    identifier: "friend-available-\(newFriend.id.uuidString)"
+                )
+            }
+        }
+    }
+
     // MARK: - Status Management
     
     func checkAndRefreshStatuses() {
         let now = Date()
-        
+
         // Check if current status has expired
         if let until = statusUntil, until <= now {
             autoExpireStatus()
         }
-        
+
         // Apply schedule-based status if applicable
         applyScheduleIfNeeded(at: now)
-        
+
         // Update friend statuses locally
         updateFriendStatuses()
-        
+
+        // Check for bidirectional friend removals
+        checkForFriendRemovals()
+
         // Sync with CloudKit
         syncFriendStatuses()
     }
@@ -236,8 +297,11 @@ final class OpenLineViewModel: ObservableObject {
         statusUntil = nil
         statusHistory.append((.noStatus, Date()))
         saveData()
-        
+
         syncManager.updateUserStatus(status: currentStatus, message: statusMessage, until: statusUntil)
+
+        // Update widget immediately when status expires
+        syncToWidget()
     }
     
     private func updateFriendStatuses() {
@@ -250,15 +314,18 @@ final class OpenLineViewModel: ObservableObject {
                 hasChanges = true
             }
         }
-        
+
         if hasChanges {
             friendCategoriesCache = nil // Invalidate cache
             saveData()
+            syncToWidget()
         }
     }
     
     func syncFriendStatuses() {
         isLoading = true
+
+        let oldFriends = friends
 
         syncManager.fetchFriendStatuses(for: friends) { [weak self] result in
             DispatchQueue.main.async {
@@ -266,9 +333,13 @@ final class OpenLineViewModel: ObservableObject {
 
                 switch result {
                 case .success(let updatedFriends):
+                    // Check for friends who just became available (for notifications)
+                    self?.checkForNewlyAvailableFriends(oldFriends: oldFriends, newFriends: updatedFriends)
+
                     self?.friends = updatedFriends
                     self?.friendCategoriesCache = nil
                     self?.saveData()
+                    self?.syncToWidget()
                 case .failure(let error):
                     self?.handleError(error)
                 }
@@ -280,18 +351,114 @@ final class OpenLineViewModel: ObservableObject {
         currentStatus = status
         statusMessage = message
         statusUntil = until
-        
+
         if let statusType = StatusType(rawValue: status) {
             statusHistory.append((statusType, Date()))
             if statusHistory.count > 10 {
                 statusHistory.removeFirst()
             }
         }
-        
+
+        // Schedule expiration timer
+        scheduleStatusExpiration(until: until)
+
         saveData()
         syncManager.updateUserStatus(status: status, message: message, until: until)
+
+        // Sync to widget via App Groups
+        syncToWidget()
     }
-    
+
+    /// Schedule a timer to automatically expire status at the specified time
+    private func scheduleStatusExpiration(until: Date?) {
+        // Cancel any existing expiration timer
+        statusExpirationTimer?.invalidate()
+        statusExpirationTimer = nil
+
+        guard let expirationDate = until else { return }
+
+        let timeInterval = expirationDate.timeIntervalSinceNow
+        guard timeInterval > 0 else {
+            // Already expired, handle immediately
+            checkAndRefreshStatuses()
+            return
+        }
+
+        // Schedule timer to fire at expiration time
+        statusExpirationTimer = Timer.scheduledTimer(withTimeInterval: timeInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkAndRefreshStatuses()
+            }
+        }
+    }
+
+    /// Sync current status and friends to widget via shared App Groups storage
+    func syncToWidget() {
+        let phone = syncManager.currentUserProfile?.phoneNumber ?? ""
+        let name = syncManager.currentUserProfile?.name ?? ""
+
+        // Get available friends for widget
+        let now = Date()
+        let widgetFriends: [WidgetFriend] = friends.compactMap { friend -> WidgetFriend? in
+            guard let until = friend.availableUntil, until > now else { return nil }
+            guard friend.currentStatus == "Available" else { return nil }
+            return WidgetFriend(
+                id: friend.id.uuidString,
+                name: friend.name,
+                phoneNumber: friend.phoneNumber,
+                status: friend.currentStatus ?? "No Status",
+                statusMessage: friend.statusMessage ?? "",
+                availableUntil: friend.availableUntil
+            )
+        }
+
+        SharedDefaults.shared.syncFromApp(
+            status: currentStatus,
+            message: statusMessage,
+            until: statusUntil,
+            phone: phone,
+            name: name,
+            duration: defaultStatusDuration,
+            friends: widgetFriends
+        )
+
+        // Reload widget timelines to show updated data
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Sync status changes made via widget back to the app
+    private func syncFromWidget() {
+        let shared = SharedDefaults.shared
+        let widgetStatus = shared.currentStatus
+        let widgetMessage = shared.statusMessage
+        let widgetUntil = shared.statusUntil
+
+        // Check if widget has a different status than the app
+        let statusChanged = widgetStatus != currentStatus
+        let untilChanged = widgetUntil != statusUntil
+
+        if statusChanged || untilChanged {
+            // Widget was used to change status - sync to app and CloudKit
+            currentStatus = widgetStatus
+            statusMessage = widgetMessage
+            statusUntil = widgetUntil
+
+            // Update CloudKit with widget changes
+            syncManager.updateUserStatus(status: widgetStatus, message: widgetMessage, until: widgetUntil)
+
+            // Schedule expiration timer for the new status
+            scheduleStatusExpiration(until: widgetUntil)
+
+            // Save locally
+            saveData()
+
+            logger.log("Synced status from widget: \(widgetStatus)")
+        }
+
+        // Also check for any schedule-based status changes
+        applyScheduleIfNeeded(at: Date())
+    }
+
     func extendCurrentStatus(by minutes: Int) {
         guard currentStatus != "No Status" else { return }
         
@@ -401,19 +568,72 @@ final class OpenLineViewModel: ObservableObject {
             }
         }
         guard let match = matching else { return }
-        
+
         let desiredStatus = match.schedule.status
         let desiredUntil = match.window.end
-        
+
         if currentStatus != desiredStatus || statusUntil != desiredUntil {
             updateCurrentStatus(status: desiredStatus, message: statusMessage, until: desiredUntil)
         }
     }
 
+    /// Schedule a timer to fire at the next schedule transition (start or end time) for precise activation/deactivation
+    private func scheduleNextActivation() {
+        scheduleActivationTimer?.invalidate()
+        scheduleActivationTimer = nil
+
+        let now = Date()
+        var nextTransition: Date?
+
+        // Find the earliest upcoming schedule start OR end time
+        for schedule in schedules where schedule.isActive {
+            // Check for upcoming start times
+            if let occurrence = nextOccurrence(for: schedule, from: now) {
+                // Consider future start times
+                if occurrence.start > now {
+                    if nextTransition == nil || occurrence.start < nextTransition! {
+                        nextTransition = occurrence.start
+                    }
+                }
+                // Also consider end times for currently active or upcoming schedules
+                if occurrence.end > now {
+                    if nextTransition == nil || occurrence.end < nextTransition! {
+                        nextTransition = occurrence.end
+                    }
+                }
+            }
+
+            // Also check current occurrence for end time
+            if let current = currentOccurrence(for: schedule, at: now) {
+                if current.end > now {
+                    if nextTransition == nil || current.end < nextTransition! {
+                        nextTransition = current.end
+                    }
+                }
+            }
+        }
+
+        guard let fireDate = nextTransition else { return }
+
+        let timeInterval = fireDate.timeIntervalSince(now)
+        guard timeInterval > 0 else { return }
+
+        // Schedule timer to fire at exact transition time
+        scheduleActivationTimer = Timer.scheduledTimer(withTimeInterval: timeInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkAndRefreshStatuses()
+                // Schedule the next transition after this one fires
+                self?.scheduleNextActivation()
+            }
+        }
+
+        logger.log("Scheduled activation timer for \(fireDate)")
+    }
+
     private func currentOccurrence(for schedule: Schedule, at now: Date) -> (start: Date, end: Date)? {
         guard let next = nextOccurrence(for: schedule, from: now.addingTimeInterval(-60*60*24)) else { return nil }
-        // If now is between start and end of ANY occurrence that starts not later than now
-        if next.start <= now && now <= next.end { return next }
+        // If now is between start and end (exclusive of end time - schedule ends AT end time, not after)
+        if next.start <= now && now < next.end { return next }
         return nil
     }
 
@@ -421,17 +641,19 @@ final class OpenLineViewModel: ObservableObject {
         // schedule.schedule examples:
         // "Oct 30, 2025, 8:00 PM-11:00 PM"
         // "Mon-Fri, 8:30 AM-9:15 AM" or "Monday, Wednesday, 5:00 PM-6:00 PM"
-        let parts = schedule.schedule.components(separatedBy: ",")
-        guard parts.count >= 2 else { return nil }
-        let first = parts[0].trimmingCharacters(in: .whitespaces)
-        let timeRangeString = parts.suffix(1).joined(separator: ",").trimmingCharacters(in: .whitespaces)
+
+        // Find the last comma to separate date/day part from time range
+        // This handles dates like "Feb 18, 2026" which contain commas
+        guard let lastCommaIndex = schedule.schedule.lastIndex(of: ",") else { return nil }
+        let first = String(schedule.schedule[..<lastCommaIndex]).trimmingCharacters(in: .whitespaces)
+        let timeRangeString = String(schedule.schedule[schedule.schedule.index(after: lastCommaIndex)...]).trimmingCharacters(in: .whitespaces)
         
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .medium
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.locale = Locale(identifier: "en_US")
         let timeFormatter = DateFormatter()
         timeFormatter.timeStyle = .short
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
+        timeFormatter.locale = Locale(identifier: "en_US")
         
         func parseTimeRange(_ str: String) -> (DateComponents, DateComponents)? {
             guard str.contains("-") else { return nil }
@@ -540,9 +762,47 @@ final class OpenLineViewModel: ObservableObject {
     // MARK: - Friend Management
 
     func removeFriend(_ friend: Friend) {
+        // Remove locally first for responsive UI
         friends.removeAll { $0.id == friend.id }
         friendCategoriesCache = nil // Invalidate cache
         saveData()
+
+        // Create removal record in CloudKit for bidirectional removal
+        guard let myPhone = syncManager.currentUserProfile?.phoneNumber else { return }
+        syncManager.removeFriend(myPhone: myPhone, friendPhone: friend.phoneNumber) { [weak self] result in
+            if case .failure(let error) = result {
+                self?.handleError(error)
+            }
+        }
+    }
+
+    /// Check for and process any pending friend removals from other users
+    func checkForFriendRemovals() {
+        syncManager.checkForFriendRemovals { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let removerPhones):
+                    guard let self = self, !removerPhones.isEmpty else { return }
+
+                    // Remove friends whose phone numbers are in the removal list
+                    var hasChanges = false
+                    for phone in removerPhones {
+                        if self.friends.contains(where: { $0.phoneNumber == phone }) {
+                            self.friends.removeAll { $0.phoneNumber == phone }
+                            hasChanges = true
+                        }
+                    }
+
+                    if hasChanges {
+                        self.friendCategoriesCache = nil
+                        self.saveData()
+                    }
+                case .failure:
+                    // Silently ignore errors - this is a background sync operation
+                    break
+                }
+            }
+        }
     }
     
     func updateFriendVisibility(friend: Friend, canSee: Bool) {
@@ -577,28 +837,38 @@ final class OpenLineViewModel: ObservableObject {
         let now = Date()
         let oneHourFromNow = Calendar.current.date(byAdding: .hour, value: 1, to: now) ?? now
 
-        // Statuses that count as "available now" - can receive calls
-        let availableStatuses = ["Available", "Commuting"]
-
+        // A friend is "available now" if their status is "Available" AND their availability hasn't expired
         let availableNow = friends.filter { friend in
-            guard let until = friend.availableUntil else { return false }
-            return until > now && availableStatuses.contains(friend.displayStatus)
+            // Must have "Available" status
+            guard friend.displayStatus == "Available" else { return false }
+            // If they have an expiration time, it must be in the future
+            if let until = friend.availableUntil {
+                return until > now
+            }
+            // No expiration = always available
+            return true
         }
 
+        // "Available soon" = status will change to available within the hour
         let availableSoon = friends.filter { friend in
             guard let until = friend.availableUntil else { return false }
-            return until > now && until <= oneHourFromNow && !availableStatuses.contains(friend.displayStatus)
+            // They're currently NOT available but will be free soon
+            return friend.displayStatus != "Available" && until > now && until <= oneHourFromNow
         }
 
+        // Everyone else is "not available"
         let notAvailable = friends.filter { friend in
+            // Not in availableNow
+            let isAvailableNow = friend.displayStatus == "Available" && (friend.availableUntil == nil || friend.availableUntil! > now)
+            if isAvailableNow { return false }
+
+            // Not in availableSoon
             if let until = friend.availableUntil {
-                if until > oneHourFromNow && !availableStatuses.contains(friend.displayStatus) {
-                    return true
-                }
-                return until <= now || friend.displayStatus == "Unavailable"
-            } else {
-                return true
+                let isAvailableSoon = friend.displayStatus != "Available" && until > now && until <= oneHourFromNow
+                if isAvailableSoon { return false }
             }
+
+            return true
         }
         
         let categories = [
@@ -686,6 +956,7 @@ final class OpenLineViewModel: ObservableObject {
         group.notify(queue: .main) { [weak self] in
             self?.isLoading = false
             self?.saveData()
+            self?.updateAppBadge()
         }
     }
     
@@ -731,17 +1002,25 @@ final class OpenLineViewModel: ObservableObject {
                 switch result {
                 case .success:
                     if accept {
-                        let newFriend = Friend(
-                            name: request.fromUserName,
-                            phoneNumber: request.fromUserPhone,
-                            email: request.fromUserEmail
-                        )
-                        self?.friends.append(newFriend)
-                        self?.friendCategoriesCache = nil
+                        // Check for duplicate before adding
+                        let alreadyFriend = self?.friends.contains { $0.phoneNumber == request.fromUserPhone } ?? false
+                        if !alreadyFriend {
+                            let newFriend = Friend(
+                                name: request.fromUserName,
+                                phoneNumber: request.fromUserPhone,
+                                email: request.fromUserEmail
+                            )
+                            self?.friends.append(newFriend)
+                            self?.friendCategoriesCache = nil
+                        }
                     }
 
                     self?.pendingFriendRequests.removeAll { $0.id == request.id }
                     self?.saveData()
+
+                    // Clear badge if no more pending requests
+                    self?.updateAppBadge()
+
                     completion()
 
                 case .failure(let error):
@@ -758,18 +1037,21 @@ final class OpenLineViewModel: ObservableObject {
         schedules.append(schedule)
         saveData()
         applyScheduleIfNeeded(at: Date())
+        scheduleNextActivation()
     }
-    
+
     func updateSchedule(original: Schedule, updated: Schedule) {
         if let index = schedules.firstIndex(where: { $0.id == original.id }) {
             schedules[index] = updated
             saveData()
             applyScheduleIfNeeded(at: Date())
+            scheduleNextActivation()
         }
     }
-    
+
     func deleteSchedule(_ schedule: Schedule) {
         schedules.removeAll { $0.id == schedule.id }
+        scheduleNextActivation()
         saveData()
         applyScheduleIfNeeded(at: Date())
     }
@@ -796,8 +1078,8 @@ final class OpenLineViewModel: ObservableObject {
             friends[0].statusMessage = "Free for calls!"
             friends[0].availableUntil = Calendar.current.date(byAdding: .hour, value: 2, to: Date())
 
-            friends[1].currentStatus = "Commuting"
-            friends[1].statusMessage = "Perfect time for calls!"
+            friends[1].currentStatus = "Unavailable"
+            friends[1].statusMessage = "Can't talk right now"
             friends[1].availableUntil = Calendar.current.date(byAdding: .minute, value: 45, to: Date())
 
             // Note: Sample friend requests are NOT created because they lack cloudKitRecordID

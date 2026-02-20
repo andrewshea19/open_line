@@ -8,22 +8,26 @@ import SwiftUI
 
 // MARK: - Glass Card Modifier
 struct GlassCardStyle: ViewModifier {
-    var cornerRadius: CGFloat = 20
-    var padding: CGFloat = 16
-    
+    var cornerRadius: CGFloat = 10
+    var padding: CGFloat = 14
+
     func body(content: Content) -> some View {
         content
             .padding(padding)
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
+                    .fill(Color(UIColor.secondarySystemBackground))
+                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(Color(UIColor.separator).opacity(0.25), lineWidth: 0.5)
             }
     }
 }
 
 extension View {
-    func glassCard(cornerRadius: CGFloat = 20, padding: CGFloat = 16) -> some View {
+    func glassCard(cornerRadius: CGFloat = 10, padding: CGFloat = 14) -> some View {
         modifier(GlassCardStyle(cornerRadius: cornerRadius, padding: padding))
     }
 }
@@ -31,28 +35,29 @@ extension View {
 // MARK: - Glass Button Style
 struct GlassButtonStyle: ButtonStyle {
     var isPrimary: Bool = false
-    
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .background {
                 Group {
                     if isPrimary {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.accentColor.opacity(0.2))
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.accentColor)
                     } else {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial)
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(UIColor.secondarySystemBackground))
                     }
                 }
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(isPrimary ? Color.accentColor.opacity(0.3) : Color.white.opacity(0.1), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color(UIColor.separator).opacity(0.3), lineWidth: 0.5)
                 }
             }
-            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+            .opacity(configuration.isPressed ? 0.9 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -88,7 +93,7 @@ struct LiquidGlassBackground: View {
 struct GlassStatusCard<Content: View>: View {
     let content: Content
     var gradient: LinearGradient
-    
+
     init(
         gradient: LinearGradient = LinearGradient(
             colors: [Color.blue.opacity(0.7), Color.indigo.opacity(0.85)],
@@ -100,32 +105,24 @@ struct GlassStatusCard<Content: View>: View {
         self.gradient = gradient
         self.content = content()
     }
-    
+
     var body: some View {
         ZStack {
             // Base gradient
             gradient
-            
+
             // Glass overlay
-            RoundedRectangle(cornerRadius: 20)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(UIColor.secondarySystemBackground))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 20)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.3), .white.opacity(0.1)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color(UIColor.separator).opacity(0.25), lineWidth: 0.5)
                 }
-                .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 10)
-                .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 2)
-            
+                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+
             content
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -135,23 +132,22 @@ struct ModernIconBadge: View {
     let color: Color
     var size: CGFloat = 44
     var useNeutralStyle: Bool = false
-    
+
     var body: some View {
         ZStack {
             if useNeutralStyle {
-                Circle()
-                    .fill(Color.white)
+                RoundedRectangle(cornerRadius: size * 0.22)
+                    .fill(color)
             } else {
-                Circle()
-                    .fill(color.opacity(0.15))
+                RoundedRectangle(cornerRadius: size * 0.22)
+                    .fill(color.opacity(0.12))
             }
 
             Image(systemName: icon)
                 .font(.system(size: size * 0.45, weight: .semibold))
-                .foregroundStyle(useNeutralStyle ? .primary : color)
+                .foregroundStyle(useNeutralStyle ? .white : color)
         }
         .frame(width: size, height: size)
-        .shadow(color: useNeutralStyle ? .clear : color.opacity(0.2), radius: 4, x: 0, y: 2)
     }
 }
 

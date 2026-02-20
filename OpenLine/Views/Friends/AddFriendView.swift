@@ -23,12 +23,12 @@ struct AddFriendView: View {
     @State private var showLocalError = false
     @State private var localErrorMessage = ""
     @Environment(\.dismiss) private var dismiss
-    
+
     enum SearchMethod: String, CaseIterable {
         case contacts = "Contacts"
         case phone = "Phone Number"
     }
-    
+
     var body: some View {
         NavigationView {
             ScrollView {
@@ -36,9 +36,9 @@ struct AddFriendView: View {
                     // Search method picker
                     VStack(alignment: .leading, spacing: 8) {
                         Text("How would you like to add a friend?")
-                            .font(.caption)
+                            .font(TurretTheme.headerFont(size: 13))
                             .foregroundColor(.secondary)
-                            .textCase(.uppercase)
+                            
 
                         Picker("Search Method", selection: $searchMethod) {
                             ForEach(SearchMethod.allCases, id: \.self) { method in
@@ -64,10 +64,11 @@ struct AddFriendView: View {
                                 HStack {
                                     Image(systemName: "person.crop.rectangle")
                                     Text("Browse Contacts")
+                                        .font(TurretTheme.statusFont(size: 15))
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding()
-                                .background(Color.blue)
+                                .background(Color.accentColor)
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
                             }
@@ -75,6 +76,7 @@ struct AddFriendView: View {
 
                         case .phone:
                             TextField("Phone Number", text: $phoneNumber)
+                                .font(TurretTheme.statusFont(size: 16, weight: .medium))
                                 .keyboardType(.phonePad)
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
 
@@ -86,10 +88,11 @@ struct AddFriendView: View {
                                             .tint(.white)
                                     }
                                     Text(isSearching ? "Searching..." : "Search")
+                                        .font(TurretTheme.statusFont(size: 15))
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding()
-                                .background(phoneNumber.isEmpty || isSearching ? Color.gray : Color.blue)
+                                .background(phoneNumber.isEmpty || isSearching ? Color.gray : Color.accentColor)
                                 .foregroundColor(.white)
                                 .cornerRadius(10)
                             }
@@ -117,6 +120,7 @@ struct AddFriendView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") { dismiss() }
+                        .font(TurretTheme.bodyFont(size: 17))
                 }
             }
         }
@@ -154,60 +158,74 @@ struct AddFriendView: View {
                     VStack(alignment: .leading) {
                         HStack {
                             Text(user.name)
-                                .font(.headline)
-                            
+                                .font(TurretTheme.statusFont(size: 16))
+
                             if isInContacts(user) {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
+                                    .foregroundColor(TurretTheme.ledGreen)
                                     .font(.caption)
                             }
                         }
-                        
+
                         Text(user.phoneNumber)
-                            .font(.caption)
+                            .font(TurretTheme.captionFont(size: 13))
                             .foregroundColor(.secondary)
                     }
-                    
+
                     Spacer()
-                    
-                    Circle()
-                        .fill(statusColor(for: user.currentStatus))
-                        .frame(width: 12, height: 12)
+
+                    // LED indicator
+                    ZStack {
+                        Circle()
+                            .fill(statusColor(for: user.currentStatus).opacity(0.2))
+                            .frame(width: 18, height: 18)
+                            .blur(radius: 2)
+
+                        Circle()
+                            .fill(TurretTheme.panelDark)
+                            .frame(width: 14, height: 14)
+
+                        Circle()
+                            .fill(statusColor(for: user.currentStatus))
+                            .frame(width: 8, height: 8)
+                    }
                 }
-                
+
                 if isInContacts(user) {
                     HStack {
                         Image(systemName: "person.crop.circle.badge.checkmark")
-                            .foregroundColor(.green)
+                            .foregroundColor(TurretTheme.ledGreen)
                         Text("This person is in your contacts")
-                            .font(.caption)
-                            .foregroundColor(.green)
+                            .font(TurretTheme.captionFont(size: 12))
+                            .foregroundColor(TurretTheme.ledGreen)
                     }
                     .padding(.vertical, 2)
                 } else {
                     HStack {
                         Image(systemName: "exclamationmark.triangle")
-                            .foregroundColor(.orange)
+                            .foregroundColor(TurretTheme.ledAmber)
                         Text("This person is not in your contacts")
-                            .font(.caption)
-                            .foregroundColor(.orange)
+                            .font(TurretTheme.captionFont(size: 12))
+                            .foregroundColor(TurretTheme.ledAmber)
                     }
                     .padding(.vertical, 2)
                 }
             }
             .padding(12)
             .glassCard(cornerRadius: 16, padding: 0)
-            
+
             // Message input
             VStack(alignment: .leading, spacing: 8) {
                 Text("Message (Optional)")
-                    .font(.caption)
+                    .font(TurretTheme.headerFont(size: 13))
                     .foregroundColor(.secondary)
-                
+                    
+
                 TextEditor(text: $message)
+                    .font(TurretTheme.bodyFont(size: 15))
                     .frame(minHeight: 100)
             }
-            
+
             // Send request button
             Button {
                 sendFriendRequest(to: user)
@@ -219,12 +237,12 @@ struct AddFriendView: View {
                             .tint(.white)
                     }
                     Text(isSending ? "Sending..." : "Send Friend Request")
+                        .font(TurretTheme.statusFont(size: 15))
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .foregroundColor(.white)
-                .font(.system(size: 16, weight: .semibold))
-                .background(Color.blue)
+                .background(Color.accentColor)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(BorderlessButtonStyle())
@@ -232,21 +250,21 @@ struct AddFriendView: View {
             .opacity(isSearching || isSending ? 0.6 : 1.0)
         }
     }
-    
+
     private func isInContacts(_ user: UserProfile) -> Bool {
         let contactVerifier = ContactVerificationManager.shared
-        
+
         if contactVerifier.isPhoneNumberInContacts(user.phoneNumber) {
             return true
         }
-        
+
         if let email = user.email, contactVerifier.isEmailInContacts(email) {
             return true
         }
-        
+
         return false
     }
-    
+
     private func presentContactPicker() {
         ContactPickerPresenter.shared.present(
             onContactSelected: { [self] contact in
@@ -275,7 +293,7 @@ struct AddFriendView: View {
         self.phoneNumber = normalizedPhone
         searchByPhone()
     }
-    
+
     private func searchByPhone() {
         guard !phoneNumber.isEmpty else { return }
 
@@ -320,8 +338,22 @@ struct AddFriendView: View {
             }
         }
     }
-    
+
     private func sendFriendRequest(to user: UserProfile) {
+        // Check if already a friend
+        if viewModel.friends.contains(where: { $0.phoneNumber == user.phoneNumber }) {
+            localErrorMessage = "\(user.name) is already your friend."
+            showLocalError = true
+            return
+        }
+
+        // Check if already sent a request
+        if viewModel.sentFriendRequests.contains(where: { $0.toUserPhone == user.phoneNumber }) {
+            localErrorMessage = "You already have a pending friend request to \(user.name)."
+            showLocalError = true
+            return
+        }
+
         isSending = true
 
         guard let currentProfile = SyncManager.shared.currentUserProfile else {
@@ -362,9 +394,15 @@ struct AddFriendView: View {
             }
         }
     }
-    
+
     private func statusColor(for status: String) -> Color {
-        StatusType(rawValue: status)?.color ?? .gray
+        switch StatusType(rawValue: status) {
+        case .available:
+            return TurretTheme.ledGreen
+        case .unavailable:
+            return TurretTheme.ledRed
+        default:
+            return TurretTheme.ledAmber
+        }
     }
 }
-

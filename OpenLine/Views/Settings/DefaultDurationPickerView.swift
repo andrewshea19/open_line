@@ -10,7 +10,7 @@ struct DefaultDurationPickerView: View {
     @Binding var selectedDuration: Int
     @Binding var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
-    
+
     private let durationOptions = [
         (30, "30 minutes"),
         (60, "1 hour"),
@@ -19,7 +19,7 @@ struct DefaultDurationPickerView: View {
         (480, "8 hours"),
         (1440, "All day")
     ]
-    
+
     var body: some View {
         NavigationView {
             List {
@@ -30,11 +30,12 @@ struct DefaultDurationPickerView: View {
                     }) {
                         HStack {
                             Text(label)
+                                .font(TurretTheme.statusFont(size: 15, weight: .medium))
                                 .foregroundColor(.primary)
                             Spacer()
                             if selectedDuration == duration {
                                 Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(.accentColor)
                             }
                         }
                     }
@@ -45,6 +46,7 @@ struct DefaultDurationPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
+                        .font(TurretTheme.statusFont(size: 17))
                 }
             }
         }

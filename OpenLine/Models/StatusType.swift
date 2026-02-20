@@ -9,7 +9,6 @@ import SwiftUI
 
 enum StatusType: String, CaseIterable {
     case available = "Available"
-    case commuting = "Commuting"
     case unavailable = "Unavailable"
     case noStatus = "No Status"
 }
@@ -19,8 +18,6 @@ extension StatusType {
         switch self {
         case .available:
             return "Free for calls!"
-        case .commuting:
-            return "Perfect time for calls!"
         case .unavailable:
             return "Can't talk right now"
         case .noStatus:
@@ -31,8 +28,6 @@ extension StatusType {
     var color: Color {
         switch self {
         case .available:
-            return .green
-        case .commuting:
             return .green
         case .noStatus:
             return .orange

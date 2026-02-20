@@ -18,6 +18,8 @@ protocol CloudKitServiceProtocol {
     func respondToFriendRequest(recordID: String, accept: Bool, responderPhone: String, senderPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
     func deleteFriendRequest(recordID: String, completion: @escaping (Result<Bool, AppError>) -> Void)
     func fetchFriendProfiles(friendUniqueIDs: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void)
+    func createFriendRemoval(removerPhone: String, removedPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
+    func fetchFriendRemovals(forPhone phoneNumber: String, completion: @escaping (Result<[String], AppError>) -> Void)
 }
 
 final class CloudKitManager: CloudKitServiceProtocol {
@@ -26,6 +28,7 @@ final class CloudKitManager: CloudKitServiceProtocol {
         static let userProfile = "UserProfile"
         static let friendRequest = "FriendRequest"
         static let friendRequestResponse = "FriendRequestResponse"
+        static let friendRemoval = "FriendRemoval"
     }
 
     private enum UserKeys {
@@ -63,6 +66,14 @@ final class CloudKitManager: CloudKitServiceProtocol {
         static let senderPhone = "senderPhone"              // Original sender's phone (for their queries)
         static let accepted = "accepted"                    // true = accepted, false = declined
         static let respondedAt = "respondedAt"
+    }
+
+    // Keys for FriendRemoval - notifies the other user when removed
+    private enum RemovalKeys {
+        static let removerPhone = "removerPhone"      // Phone of user who initiated the removal
+        static let removedPhone = "removedPhone"      // Phone of user being removed
+        static let removedAt = "removedAt"
+        static let acknowledged = "acknowledged"       // Whether the removed user has processed this
     }
 
     // MARK: - Properties
@@ -758,6 +769,72 @@ final class CloudKitManager: CloudKitServiceProtocol {
             }
 
             self.publicDB.add(operation)
+        }
+    }
+
+    // MARK: - Friend Removal (Bidirectional)
+
+    func createFriendRemoval(removerPhone: String, removedPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void) {
+        let record = CKRecord(recordType: RecordType.friendRemoval)
+        record[RemovalKeys.removerPhone] = removerPhone as CKRecordValue
+        record[RemovalKeys.removedPhone] = removedPhone as CKRecordValue
+        record[RemovalKeys.removedAt] = Date() as CKRecordValue
+        record[RemovalKeys.acknowledged] = 0 as CKRecordValue
+
+        publicDB.save(record) { _, error in
+            if let error = error {
+                completion(.failure(self.mapCKError(error)))
+                return
+            }
+            completion(.success(true))
+        }
+    }
+
+    func fetchFriendRemovals(forPhone phoneNumber: String, completion: @escaping (Result<[String], AppError>) -> Void) {
+        // Find all records where this user was removed and hasn't acknowledged it yet
+        let predicate = NSPredicate(format: "%K == %@ AND %K == 0", RemovalKeys.removedPhone, phoneNumber, RemovalKeys.acknowledged)
+        let query = CKQuery(recordType: RecordType.friendRemoval, predicate: predicate)
+
+        publicDB.fetch(withQuery: query, inZoneWith: nil, desiredKeys: nil, resultsLimit: CKQueryOperation.maximumResults) { [weak self] queryResult in
+            guard let self = self else { return }
+
+            switch queryResult {
+            case .failure(let error):
+                // If schema doesn't exist yet, return empty array
+                let errorDesc = error.localizedDescription
+                if errorDesc.contains("Unknown field") || errorDesc.contains("Unknown record type") || errorDesc.contains("indexable") || errorDesc.contains("Queryable") {
+                    completion(.success([]))
+                    return
+                }
+                completion(.failure(self.mapCKError(error)))
+            case .success(let (matchResults, _)):
+                let records = matchResults.compactMap { try? $0.1.get() }
+
+                // Extract the phone numbers of users who removed us
+                var removerPhones: [String] = []
+                var recordsToUpdate: [CKRecord] = []
+
+                for record in records {
+                    if let removerPhone = record[RemovalKeys.removerPhone] as? String {
+                        removerPhones.append(removerPhone)
+                        // Mark as acknowledged
+                        record[RemovalKeys.acknowledged] = 1 as CKRecordValue
+                        recordsToUpdate.append(record)
+                    }
+                }
+
+                // Update records to mark as acknowledged
+                if !recordsToUpdate.isEmpty {
+                    let operation = CKModifyRecordsOperation(recordsToSave: recordsToUpdate, recordIDsToDelete: nil)
+                    operation.savePolicy = .changedKeys
+                    operation.modifyRecordsResultBlock = { _ in
+                        // Ignore errors - best effort acknowledgment
+                    }
+                    self.publicDB.add(operation)
+                }
+
+                completion(.success(removerPhones))
+            }
         }
     }
 }

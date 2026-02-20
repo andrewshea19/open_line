@@ -28,6 +28,8 @@ protocol SyncManagerProtocol {
     func cancelFriendRequest(_ request: FriendRequest, completion: @escaping (Result<Bool, AppError>) -> Void)
     func fetchIncomingFriendRequests(completion: @escaping (Result<[FriendRequest], AppError>) -> Void)
     func fetchOutgoingFriendRequests(completion: @escaping (Result<[FriendRequest], AppError>) -> Void)
+    func removeFriend(myPhone: String, friendPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
+    func checkForFriendRemovals(completion: @escaping (Result<[String], AppError>) -> Void)
 }
 
 final class SyncManager: ObservableObject, SyncManagerProtocol {
@@ -332,6 +334,25 @@ final class SyncManager: ObservableObject, SyncManagerProtocol {
                     completion(.success(updated))
                 }
             }
+        }
+    }
+
+    // MARK: - Friend Removal (Bidirectional)
+
+    func removeFriend(myPhone: String, friendPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void) {
+        cloudService.createFriendRemoval(removerPhone: myPhone, removedPhone: friendPhone) { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    func checkForFriendRemovals(completion: @escaping (Result<[String], AppError>) -> Void) {
+        guard let profile = currentUserProfile else {
+            completion(.success([]))
+            return
+        }
+
+        cloudService.fetchFriendRemovals(forPhone: profile.phoneNumber) { result in
+            DispatchQueue.main.async { completion(result) }
         }
     }
 }

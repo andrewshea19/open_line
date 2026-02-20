@@ -12,27 +12,31 @@ struct CustomDurationPickerView: View {
     @Binding var isPresented: Bool
     let onSave: (Int, Int) -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         NavigationView {
             VStack {
                 HStack {
                     Picker("Hours", selection: $hours) {
                         ForEach(0..<24, id: \.self) { hour in
-                            Text("\(hour) hr").tag(hour)
+                            Text("\(hour) hr")
+                                .font(TurretTheme.statusFont(size: 16))
+                                .tag(hour)
                         }
                     }
                     .pickerStyle(WheelPickerStyle())
-                    
+
                     Picker("Minutes", selection: $minutes) {
                         ForEach(Array(stride(from: 0, through: 55, by: 5)), id: \.self) { minute in
-                            Text("\(minute) min").tag(minute)
+                            Text("\(minute) min")
+                                .font(TurretTheme.statusFont(size: 16))
+                                .tag(minute)
                         }
                     }
                     .pickerStyle(WheelPickerStyle())
                 }
                 .padding()
-                
+
                 Spacer()
             }
             .navigationTitle("Custom Duration")
@@ -40,14 +44,15 @@ struct CustomDurationPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") { dismiss() }
+                        .font(TurretTheme.bodyFont(size: 17))
                 }
-                
+
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
                         onSave(hours, minutes)
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .font(TurretTheme.statusFont(size: 17))
                 }
             }
         }

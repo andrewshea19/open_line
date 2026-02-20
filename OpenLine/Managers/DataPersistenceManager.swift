@@ -35,7 +35,7 @@ final class DataPersistenceManager {
     // MARK: - Preferences (UserDefaults)
     
     var defaultStatusDuration: Int {
-        get { userDefaults.integer(forKey: defaultStatusDurationKey) == 0 ? 120 : userDefaults.integer(forKey: defaultStatusDurationKey) }
+        get { userDefaults.integer(forKey: defaultStatusDurationKey) == 0 ? 60 : userDefaults.integer(forKey: defaultStatusDurationKey) }
         set { userDefaults.set(newValue, forKey: defaultStatusDurationKey) }
     }
     
