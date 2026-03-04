@@ -11,6 +11,7 @@ protocol CloudKitServiceProtocol {
     func fetchOrCreateCurrentUserProfile(localProfile: UserProfile?, completion: @escaping (Result<UserProfile, AppError>) -> Void)
     func upsertUserProfile(_ profile: UserProfile, completion: @escaping (Result<UserProfile, AppError>) -> Void)
     func searchUsersByPhone(_ phone: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void)
+    func searchUsersByPhones(_ phones: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void)
     func searchUsersByEmail(_ email: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void)
     func createFriendRequest(from currentUser: UserProfile, to remoteUser: UserProfile, message: String?, completion: @escaping (Result<Bool, AppError>) -> Void)
     func fetchIncomingFriendRequests(forPhone phoneNumber: String, completion: @escaping (Result<[FriendRequest], AppError>) -> Void)
@@ -20,6 +21,8 @@ protocol CloudKitServiceProtocol {
     func fetchFriendProfiles(friendUniqueIDs: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void)
     func createFriendRemoval(removerPhone: String, removedPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
     func fetchFriendRemovals(forPhone phoneNumber: String, completion: @escaping (Result<[String], AppError>) -> Void)
+    func createAvailabilityNotifications(fromUser: UserProfile, targetPhones: [String], durationText: String?, completion: @escaping (Result<Bool, AppError>) -> Void)
+    func deleteOldAvailabilityNotifications(fromUserPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
 }
 
 final class CloudKitManager: CloudKitServiceProtocol {
@@ -29,6 +32,7 @@ final class CloudKitManager: CloudKitServiceProtocol {
         static let friendRequest = "FriendRequest"
         static let friendRequestResponse = "FriendRequestResponse"
         static let friendRemoval = "FriendRemoval"
+        static let availabilityNotification = "AvailabilityNotification"
     }
 
     private enum UserKeys {
@@ -74,6 +78,15 @@ final class CloudKitManager: CloudKitServiceProtocol {
         static let removedPhone = "removedPhone"      // Phone of user being removed
         static let removedAt = "removedAt"
         static let acknowledged = "acknowledged"       // Whether the removed user has processed this
+    }
+
+    private enum AvailabilityNotificationKeys {
+        static let targetPhone = "targetPhone"
+        static let fromUserName = "fromUserName"
+        static let fromUserPhone = "fromUserPhone"
+        static let statusMessage = "statusMessage"
+        static let durationText = "durationText"
+        static let createdAt = "createdAt"
     }
 
     // MARK: - Properties
@@ -345,8 +358,12 @@ final class CloudKitManager: CloudKitServiceProtocol {
             completion(.success(nil))
             return
         }
-        
-        let predicate = NSPredicate(format: "%K == %@ AND %K == 1", UserKeys.phoneNumber, normalizedPhone, UserKeys.isDiscoverable)
+
+        // Generate phone number variants to handle country code differences
+        // This fixes the issue where contacts may store +1XXXXXXXXXX but profile has XXXXXXXXXX or vice versa
+        let phoneVariants = generatePhoneVariants(normalizedPhone)
+
+        let predicate = NSPredicate(format: "%K IN %@ AND %K == 1", UserKeys.phoneNumber, phoneVariants, UserKeys.isDiscoverable)
         let query = CKQuery(recordType: RecordType.userProfile, predicate: predicate)
         publicDB.fetch(withQuery: query, inZoneWith: nil, desiredKeys: nil, resultsLimit: 1) { queryResult in
             switch queryResult {
@@ -369,13 +386,33 @@ final class CloudKitManager: CloudKitServiceProtocol {
         }
     }
 
+    /// Generate phone number variants to handle country code differences
+    /// Returns array containing both with and without leading "1" for US numbers
+    private func generatePhoneVariants(_ phone: String) -> [String] {
+        var variants = [phone]
+
+        // If 11 digits and starts with "1", also try without the leading "1"
+        if phone.count == 11 && phone.hasPrefix("1") {
+            let withoutCountryCode = String(phone.dropFirst())
+            variants.append(withoutCountryCode)
+        }
+
+        // If 10 digits, also try with leading "1" (US country code)
+        if phone.count == 10 {
+            let withCountryCode = "1" + phone
+            variants.append(withCountryCode)
+        }
+
+        return variants
+    }
+
     func searchUsersByEmail(_ email: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void) {
         let normalizedEmail = email.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedEmail.isEmpty else {
             completion(.success(nil))
             return
         }
-        
+
         let predicate = NSPredicate(format: "%K == %@ AND %K == 1", UserKeys.email, normalizedEmail, UserKeys.isDiscoverable)
         let query = CKQuery(recordType: RecordType.userProfile, predicate: predicate)
         publicDB.fetch(withQuery: query, inZoneWith: nil, desiredKeys: nil, resultsLimit: 1) { queryResult in
@@ -395,6 +432,86 @@ final class CloudKitManager: CloudKitServiceProtocol {
                 } else {
                     completion(.success(nil))
                 }
+            }
+        }
+    }
+
+    func searchUsersByPhones(_ phones: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void) {
+        guard !phones.isEmpty else {
+            completion(.success([]))
+            return
+        }
+
+        // Normalize and generate variants for all phone numbers
+        var allVariants: [String] = []
+        for phone in phones {
+            let normalized = phone.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+            if !normalized.isEmpty {
+                allVariants.append(contentsOf: generatePhoneVariants(normalized))
+            }
+        }
+
+        guard !allVariants.isEmpty else {
+            completion(.success([]))
+            return
+        }
+
+        // Remove duplicates from variants
+        let uniqueVariants = Array(Set(allVariants))
+
+        // CloudKit IN predicate has a limit, so batch if needed (limit is ~250)
+        let batchSize = 200
+        let batches = stride(from: 0, to: uniqueVariants.count, by: batchSize).map {
+            Array(uniqueVariants[$0..<min($0 + batchSize, uniqueVariants.count)])
+        }
+
+        // Thread-safe collection for results
+        let resultsQueue = DispatchQueue(label: "com.openline.batchsearch")
+        var allProfiles: [UserProfile] = []
+        var batchError: AppError?
+
+        let group = DispatchGroup()
+
+        for batch in batches {
+            group.enter()
+            let predicate = NSPredicate(format: "%K IN %@ AND %K == 1", UserKeys.phoneNumber, batch, UserKeys.isDiscoverable)
+            let query = CKQuery(recordType: RecordType.userProfile, predicate: predicate)
+
+            publicDB.fetch(withQuery: query, inZoneWith: nil, desiredKeys: nil, resultsLimit: CKQueryOperation.maximumResults) { queryResult in
+                defer { group.leave() }
+
+                switch queryResult {
+                case .failure(let error):
+                    let errorDesc = error.localizedDescription
+                    if !errorDesc.contains("Unknown field") && !errorDesc.contains("indexable") && !errorDesc.contains("Queryable") {
+                        resultsQueue.sync {
+                            batchError = self.mapCKError(error)
+                        }
+                    }
+                case .success(let (matchResults, _)):
+                    let records = matchResults.compactMap { try? $0.1.get() }
+                    let profiles = records.map(self.userProfile(from:))
+                    resultsQueue.sync {
+                        allProfiles.append(contentsOf: profiles)
+                    }
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            if let error = batchError {
+                completion(.failure(error))
+            } else {
+                // Deduplicate by phone number
+                var seen = Set<String>()
+                let uniqueProfiles = allProfiles.filter { profile in
+                    if seen.contains(profile.phoneNumber) {
+                        return false
+                    }
+                    seen.insert(profile.phoneNumber)
+                    return true
+                }
+                completion(.success(uniqueProfiles))
             }
         }
     }
@@ -835,6 +952,83 @@ final class CloudKitManager: CloudKitServiceProtocol {
 
                 completion(.success(removerPhones))
             }
+        }
+    }
+
+    // MARK: - Availability Notifications
+
+    func deleteOldAvailabilityNotifications(fromUserPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void) {
+        let predicate = NSPredicate(format: "%K == %@", AvailabilityNotificationKeys.fromUserPhone, fromUserPhone)
+        let query = CKQuery(recordType: RecordType.availabilityNotification, predicate: predicate)
+
+        publicDB.fetch(withQuery: query, inZoneWith: nil, desiredKeys: nil, resultsLimit: CKQueryOperation.maximumResults) { [weak self] queryResult in
+            guard let self = self else { return }
+
+            switch queryResult {
+            case .failure(let error):
+                let errorDesc = error.localizedDescription
+                if errorDesc.contains("Unknown field") || errorDesc.contains("Unknown record type") || errorDesc.contains("indexable") || errorDesc.contains("Queryable") {
+                    completion(.success(true))
+                    return
+                }
+                completion(.failure(self.mapCKError(error)))
+            case .success(let (matchResults, _)):
+                let records = matchResults.compactMap { try? $0.1.get() }
+                guard !records.isEmpty else {
+                    completion(.success(true))
+                    return
+                }
+
+                let recordIDs = records.map { $0.recordID }
+                let operation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: recordIDs)
+                operation.modifyRecordsResultBlock = { result in
+                    switch result {
+                    case .success:
+                        completion(.success(true))
+                    case .failure(let error):
+                        completion(.failure(self.mapCKError(error)))
+                    }
+                }
+                self.publicDB.add(operation)
+            }
+        }
+    }
+
+    func createAvailabilityNotifications(fromUser: UserProfile, targetPhones: [String], durationText: String?, completion: @escaping (Result<Bool, AppError>) -> Void) {
+        guard !targetPhones.isEmpty else {
+            completion(.success(true))
+            return
+        }
+
+        // Delete old notifications first, then create new ones
+        deleteOldAvailabilityNotifications(fromUserPhone: fromUser.phoneNumber) { [weak self] _ in
+            guard let self = self else { return }
+
+            var recordsToSave: [CKRecord] = []
+            for phone in targetPhones {
+                let record = CKRecord(recordType: RecordType.availabilityNotification)
+                record[AvailabilityNotificationKeys.targetPhone] = phone as CKRecordValue
+                record[AvailabilityNotificationKeys.fromUserName] = fromUser.name as CKRecordValue
+                record[AvailabilityNotificationKeys.fromUserPhone] = fromUser.phoneNumber as CKRecordValue
+                record[AvailabilityNotificationKeys.statusMessage] = (fromUser.statusMessage) as CKRecordValue
+                if let durationText = durationText {
+                    record[AvailabilityNotificationKeys.durationText] = durationText as CKRecordValue
+                }
+                record[AvailabilityNotificationKeys.createdAt] = Date() as CKRecordValue
+                recordsToSave.append(record)
+            }
+
+            let operation = CKModifyRecordsOperation(recordsToSave: recordsToSave, recordIDsToDelete: nil)
+            operation.savePolicy = .ifServerRecordUnchanged
+            operation.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success:
+                    completion(.success(true))
+                case .failure(let error):
+                    completion(.failure(self.mapCKError(error)))
+                }
+            }
+            self.publicDB.add(operation)
         }
     }
 }

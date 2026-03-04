@@ -99,6 +99,9 @@ final class NotificationManager: ObservableObject {
 
         // Create subscription for friend request responses (when someone responds to our requests)
         createFriendResponseSubscription(database: publicDB, phoneNumber: phoneNumber)
+
+        // Create subscription for availability notifications (when a friend goes green)
+        createAvailabilityNotificationSubscription(database: publicDB, phoneNumber: phoneNumber)
     }
 
     private func createFriendRequestSubscription(database: CKDatabase, phoneNumber: String) {
@@ -173,6 +176,42 @@ final class NotificationManager: ObservableObject {
                     Logger.shared.error("Failed to create friend response subscription: \(error.localizedDescription)")
                 } else {
                     Logger.shared.info("Friend response subscription created successfully")
+                }
+            }
+        }
+    }
+
+    private func createAvailabilityNotificationSubscription(database: CKDatabase, phoneNumber: String) {
+        let subscriptionID = "availability-notifications-\(phoneNumber)"
+
+        database.fetch(withSubscriptionID: subscriptionID) { existingSubscription, error in
+            if existingSubscription != nil {
+                Logger.shared.info("Availability notification subscription already exists")
+                return
+            }
+
+            let predicate = NSPredicate(format: "targetPhone == %@", phoneNumber)
+            let subscription = CKQuerySubscription(
+                recordType: "AvailabilityNotification",
+                predicate: predicate,
+                subscriptionID: subscriptionID,
+                options: [.firesOnRecordCreation]
+            )
+
+            let notificationInfo = CKSubscription.NotificationInfo()
+            notificationInfo.alertLocalizationKey = "%1$@ is now available"
+            notificationInfo.alertLocalizationArgs = ["fromUserName"]
+            notificationInfo.soundName = "default"
+            notificationInfo.shouldSendContentAvailable = true
+            notificationInfo.desiredKeys = ["fromUserName", "fromUserPhone", "statusMessage", "durationText"]
+
+            subscription.notificationInfo = notificationInfo
+
+            database.save(subscription) { savedSubscription, error in
+                if let error = error {
+                    Logger.shared.error("Failed to create availability notification subscription: \(error.localizedDescription)")
+                } else {
+                    Logger.shared.info("Availability notification subscription created successfully")
                 }
             }
         }

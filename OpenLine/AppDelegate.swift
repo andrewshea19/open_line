@@ -70,8 +70,42 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         Logger.shared.info("Received CloudKit notification for subscription: \(subscriptionID)")
 
+        if subscriptionID.contains("availability-notifications") {
+            handleAvailabilityNotification(notification)
+        }
+
         // Post notification for the app to refresh data
         NotificationCenter.default.post(name: .cloudKitDataChanged, object: nil, userInfo: ["subscriptionID": subscriptionID])
+    }
+
+    private func handleAvailabilityNotification(_ notification: CKNotification) {
+        guard let queryNotification = notification as? CKQueryNotification else { return }
+
+        let fields = queryNotification.recordFields
+        let fromUserName = fields?["fromUserName"] as? String ?? "A friend"
+        let fromUserPhone = fields?["fromUserPhone"] as? String ?? ""
+        let statusMessage = fields?["statusMessage"] as? String
+        let durationText = fields?["durationText"] as? String
+
+        // Build enriched notification body
+        var bodyParts: [String] = []
+        if let durationText = durationText, !durationText.isEmpty {
+            bodyParts.append("Available for \(durationText)")
+        }
+        if let statusMessage = statusMessage, !statusMessage.isEmpty {
+            bodyParts.append(statusMessage)
+        }
+        let body = bodyParts.isEmpty ? "Free for calls!" : bodyParts.joined(separator: " — ")
+
+        // Dedup-friendly identifier: same phone + 5-minute window
+        let timeWindow = Int(Date().timeIntervalSince1970) / 300
+        let identifier = "availability-push-\(fromUserPhone)-\(timeWindow)"
+
+        NotificationManager.shared.scheduleLocalNotification(
+            title: "\(fromUserName) is now available",
+            body: body,
+            identifier: identifier
+        )
     }
 
     // MARK: - UNUserNotificationCenterDelegate

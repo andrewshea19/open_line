@@ -20,12 +20,16 @@ final class ContactVerificationManager: ObservableObject {
     
     func checkContactsAccess() {
         let authorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
-        
-        if authorizationStatus == .authorized {
+
+        switch authorizationStatus {
+        case .authorized, .limited:
             hasContactsAccess = true
-        } else if authorizationStatus == .notDetermined {
+        case .notDetermined:
             requestContactsAccess()
-        } else {
+        case .denied, .restricted:
+            hasContactsAccess = false
+            lastError = .authenticationError("Contacts access denied")
+        @unknown default:
             hasContactsAccess = false
             lastError = .authenticationError("Contacts access denied")
         }

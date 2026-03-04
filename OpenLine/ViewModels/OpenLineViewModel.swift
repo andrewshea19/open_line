@@ -72,7 +72,8 @@ final class OpenLineViewModel: ObservableObject {
     private var statusExpirationTimer: Timer?
     private var scheduleActivationTimer: Timer?
     private let logger: LogSink
-    
+    private var lastAvailabilityNotificationSent: Date?
+
     // MARK: - Friend Categories Cache
     private var friendCategoriesCache: [(category: String, friends: [Friend])]?
     private var cacheUpdateTime: Date?
@@ -172,6 +173,9 @@ final class OpenLineViewModel: ObservableObject {
         if subscriptionID.contains("friend-request") {
             // Refresh friend requests
             fetchFriendRequests()
+        } else if subscriptionID.contains("availability-notifications") {
+            // Friend became available - refresh statuses
+            syncFriendStatuses()
         } else if subscriptionID.contains("friend-status") {
             // Refresh friend statuses
             syncFriendStatuses()
@@ -258,11 +262,24 @@ final class OpenLineViewModel: ObservableObject {
             let isNowAvailable = newFriend.currentStatus == "Available" && (newFriend.availableUntil ?? Date.distantPast) > Date()
 
             if !wasAvailable && isNowAvailable {
-                // Friend just became available - send local notification
+                // Build enriched body with duration + comment
+                var bodyParts: [String] = []
+                if let durationText = formatDurationText(until: newFriend.availableUntil) {
+                    bodyParts.append("Available for \(durationText)")
+                }
+                if let msg = newFriend.statusMessage, !msg.isEmpty {
+                    bodyParts.append(msg)
+                }
+                let body = bodyParts.isEmpty ? "Free for calls!" : bodyParts.joined(separator: " — ")
+
+                // Dedup identifier: phone + 5-minute time window
+                let timeWindow = Int(Date().timeIntervalSince1970) / 300
+                let identifier = "friend-available-\(newFriend.phoneNumber)-\(timeWindow)"
+
                 NotificationManager.shared.scheduleLocalNotification(
                     title: "\(newFriend.name) is now available",
-                    body: newFriend.statusMessage ?? "Free for calls!",
-                    identifier: "friend-available-\(newFriend.id.uuidString)"
+                    body: body,
+                    identifier: identifier
                 )
             }
         }
@@ -329,19 +346,24 @@ final class OpenLineViewModel: ObservableObject {
 
         syncManager.fetchFriendStatuses(for: friends) { [weak self] result in
             DispatchQueue.main.async {
-                self?.isLoading = false
+                guard let self = self else { return }
+                self.isLoading = false
 
                 switch result {
                 case .success(let updatedFriends):
-                    // Check for friends who just became available (for notifications)
-                    self?.checkForNewlyAvailableFriends(oldFriends: oldFriends, newFriends: updatedFriends)
+                    // Only update friends that still exist locally (don't restore removed friends)
+                    let currentFriendIds = Set(self.friends.map { $0.id })
+                    let filteredUpdates = updatedFriends.filter { currentFriendIds.contains($0.id) }
 
-                    self?.friends = updatedFriends
-                    self?.friendCategoriesCache = nil
-                    self?.saveData()
-                    self?.syncToWidget()
+                    // Check for friends who just became available (for notifications)
+                    self.checkForNewlyAvailableFriends(oldFriends: oldFriends, newFriends: filteredUpdates)
+
+                    self.friends = filteredUpdates
+                    self.friendCategoriesCache = nil
+                    self.saveData()
+                    self.syncToWidget()
                 case .failure(let error):
-                    self?.handleError(error)
+                    self.handleError(error)
                 }
             }
         }
@@ -364,6 +386,11 @@ final class OpenLineViewModel: ObservableObject {
 
         saveData()
         syncManager.updateUserStatus(status: status, message: message, until: until)
+
+        // Notify friends via push when going available
+        if status == "Available" {
+            sendAvailabilityPushNotifications(until: until)
+        }
 
         // Sync to widget via App Groups
         syncToWidget()
@@ -481,7 +508,7 @@ final class OpenLineViewModel: ObservableObject {
             // Be liberal in what we accept: medium, long, and full month formats
             let locales = [Locale(identifier: "en_US_POSIX"), Locale(identifier: "en_US")]
             let styles: [DateFormatter.Style] = [.medium, .long]
-            var cleaned = str
+            let cleaned = str
                 .replacingOccurrences(of: "\u{00A0}", with: " ") // NBSP -> space
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             for loc in locales {
@@ -505,7 +532,7 @@ final class OpenLineViewModel: ObservableObject {
             let parts = s.schedule.components(separatedBy: ",")
             guard !parts.isEmpty else { return false }
             let first = parts[0].trimmingCharacters(in: .whitespaces)
-            if let d = parseDate(first) { return d != nil }
+            if parseDate(first) != nil { return true }
             if parts.count >= 2 {
                 let combined = first + ", " + parts[1].trimmingCharacters(in: .whitespaces)
                 return parseDate(combined) != nil
@@ -671,7 +698,7 @@ final class OpenLineViewModel: ObservableObject {
         
         // One-time if first parses as a date
         if let eventDate = dateFormatter.date(from: first) {
-            var start = cal.date(bySettingHour: startTimeDC.hour ?? 0, minute: startTimeDC.minute ?? 0, second: 0, of: eventDate) ?? eventDate
+            let start = cal.date(bySettingHour: startTimeDC.hour ?? 0, minute: startTimeDC.minute ?? 0, second: 0, of: eventDate) ?? eventDate
             var end = cal.date(bySettingHour: endTimeDC.hour ?? 0, minute: endTimeDC.minute ?? 0, second: 0, of: eventDate) ?? eventDate
             if end < start { end = cal.date(byAdding: .day, value: 1, to: end) ?? end }
             return (start, end)
@@ -712,7 +739,7 @@ final class OpenLineViewModel: ObservableObject {
             guard let day = cal.date(byAdding: .day, value: offset, to: startOfDay) else { continue }
             let weekday = cal.component(.weekday, from: day) - 1 // Calendar weekday: 1=Sun
             if allowedDays.contains(weekday) {
-                var start = cal.date(bySettingHour: startTimeDC.hour ?? 0, minute: startTimeDC.minute ?? 0, second: 0, of: day) ?? day
+                let start = cal.date(bySettingHour: startTimeDC.hour ?? 0, minute: startTimeDC.minute ?? 0, second: 0, of: day) ?? day
                 var end = cal.date(bySettingHour: endTimeDC.hour ?? 0, minute: endTimeDC.minute ?? 0, second: 0, of: day) ?? day
                 if end < start { end = cal.date(byAdding: .day, value: 1, to: end) ?? end }
                 return (start, end)
@@ -889,7 +916,51 @@ final class OpenLineViewModel: ObservableObject {
         // Centralized place to enforce visibility. Keep current behavior: global flag and per-friend toggle.
         return globalStatusVisibility && friend.canSeeMyStatus
     }
-    
+
+    // MARK: - Availability Push Notifications
+
+    private func formatDurationText(until: Date?) -> String? {
+        guard let until = until else { return nil }
+        let seconds = until.timeIntervalSinceNow
+        guard seconds > 0 else { return nil }
+
+        let totalMinutes = Int(seconds / 60)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours == 0 {
+            return "\(minutes) min"
+        } else if minutes == 0 {
+            return hours == 1 ? "1 hour" : "\(hours) hrs"
+        } else {
+            let hrStr = hours == 1 ? "1 hr" : "\(hours) hrs"
+            return "\(hrStr) \(minutes) min"
+        }
+    }
+
+    private func sendAvailabilityPushNotifications(until: Date?) {
+        // Rate limit: at most once per 60 seconds
+        if let lastSent = lastAvailabilityNotificationSent,
+           Date().timeIntervalSince(lastSent) < 60 {
+            return
+        }
+
+        let targetPhones = friends
+            .filter { canSee(friend: $0) }
+            .map { $0.phoneNumber }
+
+        guard !targetPhones.isEmpty else { return }
+
+        let durationText = formatDurationText(until: until)
+        lastAvailabilityNotificationSent = Date()
+
+        syncManager.sendAvailabilityNotifications(targetPhones: targetPhones, durationText: durationText) { result in
+            if case .failure(let error) = result {
+                Logger.shared.error("Failed to send availability notifications: \(error.errorDescription ?? "")")
+            }
+        }
+    }
+
     // MARK: - Friend Requests
 
     func fetchFriendRequests() {

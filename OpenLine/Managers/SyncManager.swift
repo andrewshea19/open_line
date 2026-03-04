@@ -20,6 +20,7 @@ protocol SyncManagerProtocol {
     func updateUserStatus(status: String, message: String, until: Date?)
     func updateDeviceToken(_ token: String)
     func searchForUsersByPhone(_ phoneNumber: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void)
+    func searchForUsersByPhones(_ phoneNumbers: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void)
     func searchForUsersByEmail(_ email: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void)
     func sendFriendRequest(to userProfile: UserProfile, message: String?, completion: @escaping (Result<Bool, AppError>) -> Void)
     func fetchFriendStatuses(for friends: [Friend], completion: @escaping (Result<[Friend], AppError>) -> Void)
@@ -30,6 +31,7 @@ protocol SyncManagerProtocol {
     func fetchOutgoingFriendRequests(completion: @escaping (Result<[FriendRequest], AppError>) -> Void)
     func removeFriend(myPhone: String, friendPhone: String, completion: @escaping (Result<Bool, AppError>) -> Void)
     func checkForFriendRemovals(completion: @escaping (Result<[String], AppError>) -> Void)
+    func sendAvailabilityNotifications(targetPhones: [String], durationText: String?, completion: @escaping (Result<Bool, AppError>) -> Void)
 }
 
 final class SyncManager: ObservableObject, SyncManagerProtocol {
@@ -213,6 +215,12 @@ final class SyncManager: ObservableObject, SyncManagerProtocol {
         }
     }
 
+    func searchForUsersByPhones(_ phoneNumbers: [String], completion: @escaping (Result<[UserProfile], AppError>) -> Void) {
+        cloudService.searchUsersByPhones(phoneNumbers) { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
     func searchForUsersByEmail(_ email: String, completion: @escaping (Result<UserProfile?, AppError>) -> Void) {
         cloudService.searchUsersByEmail(email) { result in
             DispatchQueue.main.async { completion(result) }
@@ -352,6 +360,19 @@ final class SyncManager: ObservableObject, SyncManagerProtocol {
         }
 
         cloudService.fetchFriendRemovals(forPhone: profile.phoneNumber) { result in
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    // MARK: - Availability Notifications
+
+    func sendAvailabilityNotifications(targetPhones: [String], durationText: String?, completion: @escaping (Result<Bool, AppError>) -> Void) {
+        guard let profile = currentUserProfile else {
+            completion(.failure(.dataError("No user profile found")))
+            return
+        }
+
+        cloudService.createAvailabilityNotifications(fromUser: profile, targetPhones: targetPhones, durationText: durationText) { result in
             DispatchQueue.main.async { completion(result) }
         }
     }
